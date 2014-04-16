@@ -1,0 +1,39 @@
+My application uses AES to encrypt the plaintext file, RSA to encrypt the 
+AES secret key, and SHA512withRSA to sign the encrypted data.
+
+I chose AES because of it's superiority to other symmetric key algorithms as
+outlined in our book. It has a longer (stronger) key than DES. It is faster
+than Triple DES. It is faster than and not patent protected like IDEA. I used
+the default key size of 128 bits because the other options of 192 and 256 did
+not seem necessary for the purposes of my application.
+
+I used CBC mode so as to introduce randomness between encrypted ciphertext blocks. 
+Using a random initialization vector XOR'd with the first plaintext block 
+(and the preceding ciphertext block XOR'd with all subsequent plaintext blocks) 
+allows duplicate plaintext blocks to produce different ciphertext blocks when 
+encrypted. This would not be the case had I chosen ECB. OFB and CGB were not 
+chosen because they are stream ciphers for encoding smaller chunks of data with
+an algorithm designed for larger chunks. The email is a single message that is 
+encoded and sent all at once, stream ciphers were not necessary.
+
+I used PKCS5Padding because, when using AES and CBC, the two options in Java by 
+default are PKCS5 and NOPADDING. I went with the former because there is no 
+guarantee that the byte array to be encrypted will be a multiple of the block 
+size, so padding is necessary.
+
+I chose RSA to encrypt the secret key because, although very expensive, RSA is
+is very strong. This makes it perfect for encrypting just the AES key, which is
+quite small. I used a key size of 1024 rather than anything larger because the 
+strength of RSA is sufficient regardless of its key size for the purposes of 
+my application. 1024 is the recommended 'bare minimum' by many websites.
+
+I chose SHA512withRSA to sign the data because we were required to use RSA part
+for signing and verification with public/private keys. As for SHA512, it is 
+longer and more secure than the alternatives such as MD5 and SHA-1, which is
+important because we are signing some unecrypted data that is integral to 
+decryption, like the IV and the merely symmetrically encrypted ciphertext.
+The combination of RSA and AES makes the encryption itself very secure with
+small key lengths and the faster algorithms, whereas this is the single method
+through which we authenticate the data for integrity, so the faster, shorter
+methods are insufficient.
+
