@@ -128,6 +128,7 @@ class ClientThread extends Thread {
 	private int clientIndex;
 	private ClientEntry clientEntry;
 	private InetAddress ip;
+	String name;
 	
 	private static final List<ClientEntry> clients = new ArrayList<ClientEntry>();
 
@@ -160,32 +161,52 @@ class ClientThread extends Thread {
 			nonce1 = Arrays.copyOfRange(decryptedCreds, 0, 16);
 			pwHash = Arrays.copyOfRange(decryptedCreds, 16, 80);
 			nameBytes = Arrays.copyOfRange(decryptedCreds, 80, decryptedCreds.length);
-			String name = new String(nameBytes);
+			name = new String(nameBytes);
 			
 			System.out.println("Credentials separated for user " + name + ". Checking login history...");
 			clientIndex = getClientIndex(name);
 			
 			if(clientIndex == -1){
-				System.out.println("New user detected, creating new client entry. Better hope you used the correct password...");
+				System.out.println("New user detected, creating new client entry. Better hope they used the correct password...");
 				clientEntry = new ClientEntry(name, pwHash, clientSocket.getInetAddress(), true);
 				clients.add(clientEntry);
 				clientIndex = clients.indexOf(clientEntry);
 			}
-			else{
-				System.out.println("Welcome back, " + name + ". Verifying password...");
-				returningUser()
+			else if (correctPassword()){
+				System.out.println("Password verified. Updating IP address and availability for this session.");
+				clients.get(clientIndex).setIP(clientSocket.getInetAddress());
+				clients.get(clientIndex).setAvailable(true);
 			}
-				
+			else{
+				System.out.println("Incorrect PW, terminating session.");
+				output.writeObject((String)"Incorrect PW, terminating session.");
+				disconnect();
+				return;
+			}
 			
+			output.writeObject((String)"Welcome, " + name + ".\n");
 			
-			
-			
-			
-			while (true) {
-				String line = input.toString();
-				if (line.startsWith("/quit")) {
-					break;
+			while(true){
+				output.writeObject((String)"Type 'list' for a list of available users.\n");
+				output.writeObject((String)"Type 'send <USER> <MESSAGE>' to send that user a message.\n");
+				output.writeObject((String)"Type 'logout' to logout.\n");
+				String command = (String)input.readObject();
+				if(command.equalsIgnoreCase("list")){
+					listClients();
 				}
+				else if(command.startsWith("send ")){
+					
+				}
+				else if(command.equalsIgnoreCase("logout")){
+					output.writeObject((String)"Logging you out, come back soon!\n");
+					clients.get(clientIndex).setAvailable(false);
+					disconnect();
+					return;
+				}
+				else{
+					output.writeObject((String)"Bad input, try again.\n");
+				}
+				
 			}
 			
 		} 
@@ -224,14 +245,21 @@ class ClientThread extends Thread {
 		return -1;
 	}
 	
-	private void returningUser(){
-		if(pwHash == clients.get(clientIndex).pwHash){
-			System.out.println("Password accepted. Updating your IP and availability for this session");
-			clients.get(clientIndex).setIP(clientSocket.getInetAddress());
-			clients.get(clientIndex).setAvailable(true);
-		}
-		
+	private boolean correctPassword(){
+		return (pwHash == clients.get(clientIndex).pwHash);
 	}
+	
+	private void listClients() throws IOException{
+		for(ClientEntry ce:clients){
+			if(!ce.name.equals(name) && ce.available){
+				output.writeObject((String)ce.name + "\n");
+			}
+		}
+	}
+	
+	
+		
+	
 	
 	
 	
