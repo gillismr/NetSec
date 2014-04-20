@@ -1,8 +1,12 @@
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintStream;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -30,16 +34,18 @@ import java.io.*;
 
 public class SIMClient {
 
-	public static void main(String[] args) throws NoSuchAlgorithmException {
+	public static void main(String[] args) throws NoSuchAlgorithmException, IOException {
     	
-    	Socket server;
-    	Socket recipient;
+    	Socket server = null;
+    	Socket recipient = null;
     	BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
     	byte[] sendData;
     	byte[] receiveData = new byte[1024];
-    	DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+    	DataInputStream is = null;
+        DataOutputStream os = null;
+        //DataInputStream inputLine = null;
     	String message; 
-    	String name;
+    	String name = "";
     	String password = "";
     	Scanner sc = null;
     	//byte[] pwHash;
@@ -88,8 +94,8 @@ public class SIMClient {
     	byte [] pwHash = md.digest(password.getBytes());
     	System.out.println("Password hashed.");
     	
-    	sendData = 
-    	
+    	sendData = makeLoginCreds(nonce1, pwHash, name);
+    	server.getOutputStream().write(sendData);
     	
     	System.out.println("Credentials received, password hashed, nonce chosen. Initiating communication with server...");
     	
@@ -97,6 +103,14 @@ public class SIMClient {
     	
     	
     }
+	
+	private static byte[] makeLoginCreds(byte[] nonce, byte[] hash, String name) throws IOException{
+		ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
+		outputStream.write(nonce);
+		outputStream.write(hash);
+		outputStream.write(name.getBytes());
+		return outputStream.toByteArray();
+	}
 		
 		
 		
