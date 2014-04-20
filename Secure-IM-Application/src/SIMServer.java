@@ -106,11 +106,11 @@ class ClientEntry{
 		this.available = available;
 	}
 	
-	private void setIP(InetAddress newIP){
+	public void setIP(InetAddress newIP){
 		this.ip = newIP;
 	}
 		
-	private void setAvailable(boolean available){
+	public void setAvailable(boolean available){
 		this.available = available;
 	}
 }
@@ -125,6 +125,9 @@ class ClientThread extends Thread {
 	private PrivateKey privateKey;
 	private byte[] cookieNonce;
 	private byte[] nonce1, pwHash, nameBytes;
+	private int clientIndex;
+	private ClientEntry clientEntry;
+	private InetAddress ip;
 	
 	private static final List<ClientEntry> clients = new ArrayList<ClientEntry>();
 
@@ -160,7 +163,19 @@ class ClientThread extends Thread {
 			String name = new String(nameBytes);
 			
 			System.out.println("Credentials separated for user " + name + ". Checking login history...");
+			clientIndex = getClientIndex(name);
 			
+			if(clientIndex == -1){
+				System.out.println("New user detected, creating new client entry. Better hope you used the correct password...");
+				clientEntry = new ClientEntry(name, pwHash, clientSocket.getInetAddress(), true);
+				clients.add(clientEntry);
+				clientIndex = clients.indexOf(clientEntry);
+			}
+			else{
+				System.out.println("Welcome back, " + name + ". Verifying password...");
+				returningUser()
+			}
+				
 			
 			
 			
@@ -200,13 +215,22 @@ class ClientThread extends Thread {
 	
 	
 	//Returns the index of the clients login/session info if they are known. Returns -1 if they are unknown
-	private int userIsKnown(String name){
+	private int getClientIndex(String name){
 		for(ClientEntry ce:clients){
 			if(ce.name.equals(name)){
 				return clients.indexOf(ce);
 			}
 		}
 		return -1;
+	}
+	
+	private void returningUser(){
+		if(pwHash == clients.get(clientIndex).pwHash){
+			System.out.println("Password accepted. Updating your IP and availability for this session");
+			clients.get(clientIndex).setIP(clientSocket.getInetAddress());
+			clients.get(clientIndex).setAvailable(true);
+		}
+		
 	}
 	
 	
