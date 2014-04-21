@@ -8,6 +8,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.PrintStream;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
@@ -47,111 +49,217 @@ import java.util.Arrays;
 import java.io.*;
 */
 
-public class SIMClient {
+public class SIMClient{
 
+	//Fields for server connection configuration
+	Scanner sc;
+	Socket server;
+	
+	//Server public key fields
+	byte[] serverKeyBytes;
+	KeyFactory rsaKeyFactory;
+	X509EncodedKeySpec publicSpec;
+	PublicKey serverKey;
+	
+	//Streams between this client and the server
+	ObjectInputStream input;
+	ObjectOutputStream output;
+    
+    //Login
+    BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
+    String name, password;
+    
+    //Credentials to server
+    byte[] nonce1 = new byte[16]; // 16 bytes = 128 bits
+    byte[] pwHash;
+    byte[] sendData;
+    byte[] encryptedSendData;
+    
+    //Cookie
+    byte[] cookie = new byte[64];
+    
+	private Socket recipientSocket;
+	private ServerSocket listening;
+	
+	
+	
+	
+	public SIMClient(){
+		//Get configuration info, set up connection(socket) with server
+    	connectToServer();
+    	
+    	//Get the server's public key
+    	setServerKey();
+    	
+    	//Establish the I/O streams
+    	setServerStreams();
+    	
+    	//Gather login info from user
+    	setLoginInfo();
+    	
+    	//Prepare and send credentials to server (generate nonce, hash PW, encrypt with serverKey)
+    	sendCredentials();
+    	
+    	//Echo the received cookie
+    	echoCookie();
+    	
+    	//Talk to server, make sure we're logged in and good to go
+    	serverWelcome();
+    	
+    	processCommand();
+    	
+    	
+	}
+	
 	public static void main(String[] args) throws NoSuchAlgorithmException, IOException, InvalidKeySpecException, IllegalBlockSizeException, BadPaddingException, InvalidKeyException, NoSuchPaddingException {
     	
-    	Socket server = null;
-    	Socket recipient = null;
-    	ServerSocket listening = null;
-    	
-    	BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
-    	Scanner sc = null;
-    	
-    	byte[] serverKeyBytes = null;
-    	byte[] sendData;
-    	byte[] receiveData = new byte[1024];
-    	
-    	DataInputStream input = null;
-        DataOutputStream output = null;
-        //DataInputStream inputLine = null;
-    	
-        String message; 
-    	String name = "";
-    	String password = "";
-    	//byte[] pwHash;
-    	
-    	try {
-			sc = new Scanner(new File("config.txt"));
-			serverKeyBytes = readByteFromFile(new File("pub1.class"));
-		} catch (Exception e) {
-			System.out.println("Config file and/or server public key not found, please ensure the properly titled config.txt and pub1.class files are in the working directory");
-			e.printStackTrace();
-		}
-    	
-    	KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
-		X509EncodedKeySpec publicSpec = new X509EncodedKeySpec(serverKeyBytes);
-		PublicKey serverKey = rsaKeyFactory.generatePublic(publicSpec);
-    	System.out.println("Server info and public key found. Configuring connection to server...");
-    	
-    	try {
-			server = new Socket(sc.next(), Integer.parseInt(sc.next()));
-		} catch (NoSuchElementException e){
-			System.out.println("Incorrect formatting of config file, please ensure it contains the server IP addess on the first line and port number on the second");
-			e.printStackTrace();
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-    	
-    	output = new DataOutputStream(server.getOutputStream());
-    	input = new DataInputStream(server.getInputStream());
-    	System.out.println("Server connection and I/O streams established. Login required.");
-    	
-    	System.out.print("LOGIN NAME: ");
-    	try {
-			name = stdin.readLine();
-		} catch (IOException e) {
-			System.out.println("There was an IOException. Please learn how to computer.");
-			e.printStackTrace();
-		}
-    	System.out.print("PASSWORD: ");
-    	try {
-			password = stdin.readLine();
-		} catch (IOException e) {
-			System.out.println("There was an IOException. Please learn how to computer.");
-			e.printStackTrace();
-		}
-    	
-    	Random rng = new SecureRandom();
-    	byte[] nonce1 = new byte[16]; // 16 bytes = 128 bits
-    	rng.nextBytes(nonce1);
-    	System.out.println("Nonce chosen.");
-    	
-    	MessageDigest md = MessageDigest.getInstance("SHA-512");
-    	byte[] pwHash = md.digest(password.getBytes()); //64bytes = 512 bits
-    	System.out.println("Password hashed.");
-    	
-    	sendData = makeLoginCreds(nonce1, pwHash, name);
-    	System.out.println("Send data prepared.");
-    	
-    	Cipher publicChiper = Cipher.getInstance("RSA");
-		publicChiper.init(Cipher.ENCRYPT_MODE, serverKey);
-		byte[] encryptedSendData = publicChiper.doFinal(sendData);
-		System.out.println("Send data encrypted.");
+		SIMClient thisClient = new SIMClient();
 		
-		output.write(encryptedSendData);
-    	System.out.println("Data sent. Dealing with cookies...");
-    	
-    	byte[] cookie = new byte[64]; // 64bytes = 512 bits
-    	input.readFully(cookie);
-    	output.write(cookie);
-    	
-    	//At this point, the server should start handling what we want to do exactly...
-    	
-    	
-    	
-    	
-    	
     }
 	
-	private static byte[] makeLoginCreds(byte[] nonce, byte[] hash, String name) throws IOException{
+	private void connectToServer(){
+		try {
+			sc = new Scanner(new File("config.txt"));
+			server = new Socket(sc.next(), Integer.parseInt(sc.next()));}
+		catch (Exception e) {
+			System.out.println(e);}
+		System.out.println("Server config info found, connection established.");
+	}
+	
+	private void setServerKey(){
+		try {
+			serverKeyBytes = readByteFromFile(new File("pub1.class"));
+			rsaKeyFactory = KeyFactory.getInstance("RSA");
+			publicSpec = new X509EncodedKeySpec(serverKeyBytes);
+			serverKey = rsaKeyFactory.generatePublic(publicSpec);}
+		catch (Exception e) {
+			System.out.println(e);}
+		System.out.println("Server public key found and imported.");
+	}
+	
+	private void setServerStreams(){
+		try {
+			output = new ObjectOutputStream(server.getOutputStream());
+			input = new ObjectInputStream(server.getInputStream());}
+    	catch (Exception e){
+    		System.out.println(e);}
+		System.out.println("Server streams established.");
+	}
+	
+	private void setLoginInfo(){
+		try {
+    		System.out.print("LOGIN NAME: ");
+    		name = stdin.readLine();
+    		System.out.print("PASSWORD: ");
+    		password = stdin.readLine();
+		} catch (Exception e) {
+			System.out.println(e);}
+	}
+	
+	private void sendCredentials(){
+		try{
+			Random rng = new SecureRandom();
+			rng.nextBytes(nonce1); // 16 bytes = 128 bits
+			System.out.println("Nonce chosen.");
+			MessageDigest md = MessageDigest.getInstance("SHA-512");
+			pwHash = md.digest(password.getBytes()); // 64 bytes = 512 bits
+			System.out.println("Password hashed.");
+			sendData = makeLoginCreds(nonce1, pwHash, name);
+	    	System.out.println("Send data prepared.");
+	    	Cipher publicChiper = Cipher.getInstance("RSA");
+			publicChiper.init(Cipher.ENCRYPT_MODE, serverKey);
+			encryptedSendData = publicChiper.doFinal(sendData);
+			System.out.println("Send data encrypted.");
+			output.write(encryptedSendData);
+			System.out.println("Credentials sent.");
+		}
+		catch (Exception e){
+			System.out.println(e);}
+	}
+		
+	private byte[] makeLoginCreds(byte[] nonce, byte[] hash, String name) throws IOException{
 		ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
 		outputStream.write(nonce);
 		outputStream.write(hash);
 		outputStream.write(name.getBytes());
 		return outputStream.toByteArray();
 	}
+	
+	private void echoCookie(){
+		try {
+			input.readFully(cookie);
+			output.write(cookie);
+			System.out.println("Cookie received and returned.");
+		}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void serverWelcome(){
+		try{
+			System.out.println((String)input.readObject());
+		}
+		catch (Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void processCommand(){
+		try{
+			while(true){
 		
+				System.out.println("Type 'list' for a list of available users.\n");
+				System.out.println("Type 'send <USER> <MESSAGE>' to send that user a message.\n");
+				System.out.println("Type 'logout' to logout.\n");
+				String command = stdin.readLine();
+				if(command.equalsIgnoreCase("list")){
+					output.writeObject((String)"list");
+					System.out.println((String)input.readObject());
+				}
+				else if(command.startsWith("send ")){
+					doSend(command.substring(5));
+				}
+				else if(command.equalsIgnoreCase("logout")){
+					System.out.println("Logging you out, come back soon!\n");
+					output.writeObject((String)"logout");
+					dcFromServer();
+					return;
+				}
+				else{
+					System.out.println("Bad input, try again.\n");
+				}
+			}
+		}catch (Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void doSend(String nameAndMsg){
+		int endNameIndex = nameAndMsg.indexOf(" ");
+		String recipient = nameAndMsg.substring(0, endNameIndex);
+		String message = nameAndMsg.substring(endNameIndex + 1);
+		
+		//if(haveCreds && haveDH)...
+		
+		try{
+			output.writeObject((String)"connect " + recipient);
+			
+		}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void dcFromServer(){
+		try{
+			input.close();
+			output.close();
+			server.close();}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
 	// read bytes from a file
 	public static byte[] readByteFromFile(File f) throws Exception {
 		if (f.length() > Integer.MAX_VALUE)
@@ -167,7 +275,7 @@ public class SIMClient {
 		return buffer;
 	}
 		
-		
+
 	
 	
 	

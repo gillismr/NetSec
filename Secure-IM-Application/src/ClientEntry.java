@@ -15,11 +15,11 @@ class ClientEntry{
 		this.available = available;
 	}
 	
-	private void setIP(InetAddress newIP){
+	public void setIP(InetAddress newIP){
 		this.ip = newIP;
 	}
 		
-	private void setAvailable(boolean available){
+	public void setAvailable(boolean available){
 		this.available = available;
 	}
 }	

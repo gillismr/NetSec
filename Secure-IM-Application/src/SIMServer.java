@@ -129,6 +129,7 @@ class ClientThread extends Thread {
 	private ClientEntry clientEntry;
 	private InetAddress ip;
 	String name;
+	ClientEntry otherUser;
 	
 	private static final List<ClientEntry> clients = new ArrayList<ClientEntry>();
 
@@ -186,19 +187,26 @@ class ClientThread extends Thread {
 			
 			output.writeObject((String)"Welcome, " + name + ".\n");
 			
-			while(true){
-				output.writeObject((String)"Type 'list' for a list of available users.\n");
-				output.writeObject((String)"Type 'send <USER> <MESSAGE>' to send that user a message.\n");
-				output.writeObject((String)"Type 'logout' to logout.\n");
+			processCommand();
+			
+			
+		} 
+		catch (Exception e) {
+		}
+	}
+	
+
+	private void processCommand(){
+		while(true){
+			try{
 				String command = (String)input.readObject();
 				if(command.equalsIgnoreCase("list")){
-					listClients();
+					output.writeObject((String)listClients());
 				}
-				else if(command.startsWith("send ")){
-					
+				else if(command.startsWith("connect ")){
+					startPreparingKeyPair(command.substring(8));
 				}
 				else if(command.equalsIgnoreCase("logout")){
-					output.writeObject((String)"Logging you out, come back soon!\n");
 					clients.get(clientIndex).setAvailable(false);
 					disconnect();
 					return;
@@ -206,11 +214,26 @@ class ClientThread extends Thread {
 				else{
 					output.writeObject((String)"Bad input, try again.\n");
 				}
-				
 			}
+			catch(Exception e){
+				System.out.println(e);
+			}
+		}
+	}
+	
+	private void startPreparingKeyPair(String otherName){
+		try{
+			int otherIndex = getClientIndex(otherName);
+			if(otherIndex == -1){
+				output.writeObject((String)"none");
+				return;
+			}
+			output.writeObject((String)"found");
+			otherUser = clients.get(otherIndex);
 			
-		} 
-		catch (Exception e) {
+		}
+		catch(Exception e){
+			
 		}
 	}
 	
@@ -249,14 +272,16 @@ class ClientThread extends Thread {
 		return (pwHash == clients.get(clientIndex).pwHash);
 	}
 	
-	private void listClients() throws IOException{
+	private String listClients() throws IOException{
+		String listOfClients = "";
 		for(ClientEntry ce:clients){
 			if(!ce.name.equals(name) && ce.available){
-				output.writeObject((String)ce.name + "\n");
+				listOfClients += ("\n" + ce.name);
 			}
-		}
+		}	
+		return listOfClients;
 	}
-	
+}
 	
 		
 	
@@ -265,7 +290,7 @@ class ClientThread extends Thread {
 	
 	
 	
-}
+
 	
 
 
