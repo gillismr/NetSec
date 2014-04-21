@@ -1,10 +1,12 @@
 import java.io.*;
+import java.math.BigInteger;
 import java.net.*;
 import java.security.*;
 import java.security.spec.*;
 import java.util.*;
 
 import javax.crypto.*;
+import javax.crypto.spec.DHParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -43,16 +45,29 @@ public class SIMClient{
     //The person we're talking to
     InetAddress recipientINA;
 	String recipient;
-    private Socket recipientSocket;
-	private ServerSocket listening;
-	PrivateKey signatureKey;
+    PrivateKey signatureKey;
 	PublicKey verificationKey;
+	byte[] ticketToB;
 	
+	//Connecting to them
+	private Socket recipientSocket;
+	private ServerSocket listening;
+	ObjectInputStream inputB;
+	ObjectOutputStream outputB;
 	
+	//DiffieHellman stuff
+	BigInteger p = new BigInteger("105721529231725396278744238019721944883459258934172331899960783719893356089817034253461201515439737670361933937940217427577693473956344804895358846880822392696046488918274717636071583814523522759796204222618840365316653936434709172113382318497752088322889563530999616413642023504696663722814258660783284649709");
+	BigInteger g = new BigInteger("62951193033649707239238510868644285309198569779488005138430533330591756100547054332779476210740737931462466271496214673336150099168994589303046765366535435267910408582532215038620252157609127503823477022010406010833479619195676348865393025560501628436016618301150440981638807075483419386887089022419473465714");
+	int l = 1023;
+	SecretKey perfectSecretKey;
 	
 	
 	
 	public SIMClient(){
+		
+		recipient = null;
+		
+		
 		//Get configuration info, set up connection(socket) with server
     	connectToServer();
     	
@@ -221,18 +236,19 @@ public class SIMClient{
 				return;
 			}
 			
+			recipient = newRecipient;
 			recipientINA = (InetAddress)input.readObject();
 			
 			byte[] forA = (byte[])input.readObject();
 			byte[] nonce1Check = (byte[])input.readObject();
-			byte[] forB = (byte[])input.readObject();
+			ticketToB = (byte[])input.readObject();
 			byte[] signature = (byte[])input.readObject();
 			
 			Signature sig = Signature.getInstance("SHA512withRSA");
 			sig.initVerify(serverKey);
 			sig.update(forA);
 			sig.update(nonce1Check);
-			sig.update(forB);
+			sig.update(ticketToB);
 			
 			// Verify the signature of the above data
 			if(!sig.verify(signature)){
@@ -267,9 +283,156 @@ public class SIMClient{
 			verificationKey = rsaKeyFactory.generatePublic(publicSpec);
 			
 			connectToB();
+			establishDHAsA();
 			
 		}
 		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void connectToB(){
+		try {
+			recipientSocket = new Socket(recipientINA, serverPort + 1);
+			outputB = new ObjectOutputStream(recipientSocket.getOutputStream());
+			inputB = new ObjectInputStream(recipientSocket.getInputStream());
+			System.out.println("Connect to " + recipient + ", streams set up.");
+		} catch (Exception e) {
+			System.out.println(e);
+		}
+	}
+	
+	private void establishDHAsA(){
+		try {
+			outputB.writeObject((byte[])ticketToB);
+			byte[] cookieB = (byte[])inputB.readObject();
+			
+			
+			// Use the values to generate a key pair
+		    KeyPairGenerator dhKeyGen = KeyPairGenerator.getInstance("DH");
+		    DHParameterSpec dhSpec = new DHParameterSpec(p, g, l);
+		    dhKeyGen.initialize(dhSpec);
+		    KeyPair dhKeyPair = dhKeyGen.generateKeyPair();
+
+		    // Get the generated public and private keys
+		    PrivateKey dhPrivateKeyA = dhKeyPair.getPrivate();
+		    PublicKey dhPublicKeyA = dhKeyPair.getPublic();
+
+		    // Send the public key bytes to the other party signed with our private key
+		    byte[] dhPublicKeyBytesA = dhPublicKeyA.getEncoded();
+		    
+		    Signature signMyDH = Signature.getInstance("SHA512withRSA");
+		    signMyDH.initSign(signatureKey);
+		    signMyDH.update(name.getBytes());
+		    signMyDH.update(dhPublicKeyBytesA);
+			byte[] signature = signMyDH.sign();
+		    
+			output.writeObject((byte[])cookieB);
+			output.writeObject((byte[])name.getBytes());
+			output.writeObject((byte[])dhPublicKeyBytesA);
+			output.writeObject((byte[])signature);
+		    
+			
+		    // Retrieve the name, public key, and signature bytes of the other party
+			byte[] checkNameBytes = (byte[])inputB.readObject();
+			byte[] publicKeyBytesB = (byte[])inputB.readObject();
+			byte[] signatureB = (byte[])inputB.readObject();
+			String checkName = new String(checkNameBytes);
+			
+			Signature verifyHisDH = Signature.getInstance("SHA512withRSA");
+			verifyHisDH.initVerify(verificationKey);
+			verifyHisDH.update(checkNameBytes);
+			verifyHisDH.update(publicKeyBytesB);
+						
+			// Verify the signature of the above data
+			if(!verifyHisDH.verify(signatureB)){
+				System.out.println("Signature verification failed.");
+				return;
+			}
+			if(!checkName.equals(recipient)){
+				System.out.println("This is a key for the wrong person!");
+				return;
+			}
+			
+			// Calculate Kab, the shared, perfect secret key
+		    // Convert the public key bytes into a PublicKey object
+		    X509EncodedKeySpec x509KeySpec = new X509EncodedKeySpec(publicKeyBytesB);
+		    KeyFactory keyFact = KeyFactory.getInstance("DH");
+		    PublicKey dhPublicKeyB = keyFact.generatePublic(x509KeySpec);
+
+		    // Prepare to generate the secret key with the private key and public key of the other party
+		    KeyAgreement ka = KeyAgreement.getInstance("DH");
+		    ka.init(dhPrivateKeyA);
+		    ka.doPhase(dhPublicKeyB, true);
+
+		    // Generate the secret key
+		    perfectSecretKey = ka.generateSecret("DES");
+		    
+		    //Hash, send, check, then done
+		    MessageDigest md = MessageDigest.getInstance("SHA-512");
+			output.writeObject((byte[])md.digest(perfectSecretKey.getEncoded()));
+			byte[] keyHashToCheck = ((byte[])input.readObject());
+			int one = 1;
+			byte[] oneBytes = Integer.
+			
+			byte[] keyBytesPlus1 = 
+			
+		} catch (Exception e) {
+			System.out.println(e);
+		}
+	}
+	
+	private void establishDHAsB(){
+		try {
+			byte[] myTicket = (byte[])inputB.readObject();
+			
+			Random rng = new SecureRandom();
+			byte[] nonce2 = new byte[16];
+			rng.nextBytes(nonce2); // 16 bytes = 128 bits
+			byte[] ipOfA = listening.getInetAddress().getAddress();
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
+			outputStream.write(ipOfA);
+			outputStream.write(nonce2);
+			MessageDigest md = MessageDigest.getInstance("SHA-512");
+			output.writeObject((byte[])md.digest(outputStream.toByteArray()));
+			
+			
+			
+			byte[] cookieB = (byte[])inputB.readObject();
+			outputB.writeObject((byte[])ticketToB);
+			
+			
+			// Use the values to generate a key pair
+		    KeyPairGenerator dhKeyGen = KeyPairGenerator.getInstance("DH");
+		    DHParameterSpec dhSpec = new DHParameterSpec(p, g, l);
+		    dhKeyGen.initialize(dhSpec);
+		    KeyPair dhKeyPair = dhKeyGen.generateKeyPair();
+
+		    // Get the generated public and private keys
+		    PrivateKey dhPrivateKeyA = dhKeyPair.getPrivate();
+		    PublicKey dhPublicKeyA = dhKeyPair.getPublic();
+
+		    // Send the public key bytes to the other party...
+		    byte[] dhPublicKeyBytesA = dhPublicKeyA.getEncoded();
+		    outputB.writeObject((byte[])dhPublicKeyBytesA);
+		    
+		    // Retrieve the public key bytes of the other party
+		    byte[] publicKeyBytesB = (byte[])inputB.readObject();
+
+		    // Convert the public key bytes into a PublicKey object
+		    X509EncodedKeySpec x509KeySpec = new X509EncodedKeySpec(publicKeyBytesB);
+		    KeyFactory keyFact = KeyFactory.getInstance("DH");
+		    PublicKey dhPublicKeyB = keyFact.generatePublic(x509KeySpec);
+
+		    // Prepare to generate the secret key with the private key and public key of the other party
+		    KeyAgreement ka = KeyAgreement.getInstance("DH");
+		    ka.init(dhPrivateKeyA);
+		    ka.doPhase(dhPublicKeyB, true);
+
+		    // Generate the secret key
+		    perfectSecretKey = ka.generateSecret("DES");
+		
+		} catch (Exception e) {
 			System.out.println(e);
 		}
 	}
@@ -279,6 +442,24 @@ public class SIMClient{
 			input.close();
 			output.close();
 			server.close();}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void forgetRecipient(){
+		recipient = null;
+		signatureKey = null;
+		verificationKey = null;
+	}
+	
+	private void dcFromB(){
+		try{
+			inputB.close();
+			outputB.close();
+			recipientSocket.close();
+			
+		}
 		catch(Exception e){
 			System.out.println(e);
 		}
