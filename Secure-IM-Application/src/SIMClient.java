@@ -1,58 +1,20 @@
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.PrintStream;
-import java.net.DatagramPacket;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.UnknownHostException;
-import java.security.InvalidKeyException;
-import java.security.KeyFactory;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.PrivateKey;
-import java.security.PublicKey;
-import java.security.SecureRandom;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.security.spec.X509EncodedKeySpec;
-import java.util.NoSuchElementException;
-import java.util.Random;
-import java.util.Scanner;
-
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.NoSuchPaddingException;
-
-/*
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetSocketAddress;
-import javax.crypto.*;
-import javax.crypto.spec.IvParameterSpec;
+import java.io.*;
+import java.net.*;
 import java.security.*;
 import java.security.spec.*;
-import java.util.Arrays;
-import java.io.*;
-*/
+import java.util.*;
+
+import javax.crypto.*;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
 
 public class SIMClient{
 
 	//Fields for server connection configuration
 	Scanner sc;
+	String serverIP;
+	int serverPort;
 	Socket server;
 	
 	//Server public key fields
@@ -78,8 +40,14 @@ public class SIMClient{
     //Cookie
     byte[] cookie = new byte[64];
     
-	private Socket recipientSocket;
+    //The person we're talking to
+    InetAddress recipientINA;
+	String recipient;
+    private Socket recipientSocket;
 	private ServerSocket listening;
+	PrivateKey signatureKey;
+	PublicKey verificationKey;
+	
 	
 	
 	
@@ -113,6 +81,7 @@ public class SIMClient{
 	
 	public static void main(String[] args) throws NoSuchAlgorithmException, IOException, InvalidKeySpecException, IllegalBlockSizeException, BadPaddingException, InvalidKeyException, NoSuchPaddingException {
     	
+		@SuppressWarnings("unused")
 		SIMClient thisClient = new SIMClient();
 		
     }
@@ -120,7 +89,9 @@ public class SIMClient{
 	private void connectToServer(){
 		try {
 			sc = new Scanner(new File("config.txt"));
-			server = new Socket(sc.next(), Integer.parseInt(sc.next()));}
+			serverIP = sc.next();
+			serverPort = Integer.parseInt(sc.next());
+			server = new Socket(serverIP, serverPort);}
 		catch (Exception e) {
 			System.out.println(e);}
 		System.out.println("Server config info found, connection established.");
@@ -237,13 +208,65 @@ public class SIMClient{
 	
 	private void doSend(String nameAndMsg){
 		int endNameIndex = nameAndMsg.indexOf(" ");
-		String recipient = nameAndMsg.substring(0, endNameIndex);
+		String newRecipient = nameAndMsg.substring(0, endNameIndex);
 		String message = nameAndMsg.substring(endNameIndex + 1);
 		
 		//if(haveCreds && haveDH)...
 		
 		try{
 			output.writeObject((String)"connect " + recipient);
+			String maybeFound = (String)input.readObject();
+			if(maybeFound.equals("none")){
+				System.out.println("No such user, try again.");
+				return;
+			}
+			
+			recipientINA = (InetAddress)input.readObject();
+			
+			byte[] forA = (byte[])input.readObject();
+			byte[] nonce1Check = (byte[])input.readObject();
+			byte[] forB = (byte[])input.readObject();
+			byte[] signature = (byte[])input.readObject();
+			
+			Signature sig = Signature.getInstance("SHA512withRSA");
+			sig.initVerify(serverKey);
+			sig.update(forA);
+			sig.update(nonce1Check);
+			sig.update(forB);
+			
+			// Verify the signature of the above data
+			if(!sig.verify(signature)){
+				System.out.println("Signature verification failed.");
+				return;
+			}
+			if(nonce1 != nonce1Check){
+				System.out.println("The nonce was different.");
+				return;
+			}
+			
+			byte[] keyOfA = Arrays.copyOf(pwHash, 16); // use only first 128 bit
+			SecretKeySpec secretKeySpecA = new SecretKeySpec(keyOfA, "AES");
+			Cipher secCipher = Cipher.getInstance("AES");
+			secCipher.init(Cipher.DECRYPT_MODE, secretKeySpecA);
+			byte[] decryptedToCheck = secCipher.doFinal(forA);
+			
+			byte[] signatureKeyBytes = Arrays.copyOfRange(decryptedToCheck, 0, 128);
+			byte[] verifyKeyBytes = Arrays.copyOfRange(decryptedToCheck, 128, 256);
+			byte[] otherNameBytes = Arrays.copyOfRange(decryptedToCheck, 256, decryptedToCheck.length);
+			String nameToCheck = new String(otherNameBytes);
+			
+			if(!nameToCheck.equals(newRecipient)){
+				System.out.println("These are credentials for the wrong person!");
+				return;
+			}
+			
+			KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
+			PKCS8EncodedKeySpec privateSpec = new PKCS8EncodedKeySpec(signatureKeyBytes);
+			X509EncodedKeySpec publicSpec = new X509EncodedKeySpec(verifyKeyBytes);
+			signatureKey = rsaKeyFactory.generatePrivate(privateSpec);
+			verificationKey = rsaKeyFactory.generatePublic(publicSpec);
+			
+			connectToB();
 			
 		}
 		catch(Exception e){

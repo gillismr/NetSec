@@ -20,11 +20,14 @@ import java.net.SocketAddress;
 import java.security.GeneralSecurityException;
 import java.security.Key;
 import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
@@ -33,6 +36,7 @@ import java.util.List;
 import java.util.Random;
 
 import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 
 
 /*
@@ -129,6 +133,7 @@ class ClientThread extends Thread {
 	private ClientEntry clientEntry;
 	private InetAddress ip;
 	String name;
+	String otherName;
 	ClientEntry otherUser;
 	
 	private static final List<ClientEntry> clients = new ArrayList<ClientEntry>();
@@ -221,20 +226,77 @@ class ClientThread extends Thread {
 		}
 	}
 	
-	private void startPreparingKeyPair(String otherName){
+	private void startPreparingKeyPair(String maybeName){
 		try{
-			int otherIndex = getClientIndex(otherName);
-			if(otherIndex == -1){
+			int otherIndex = getClientIndex(maybeName);
+			if(otherIndex == -1 || !clients.get(otherIndex).available){
 				output.writeObject((String)"none");
 				return;
 			}
 			output.writeObject((String)"found");
 			otherUser = clients.get(otherIndex);
+			otherName = maybeName;
+			output.writeObject((InetAddress)otherUser.ip);
+			sendKeyPairPackage();
+					
+		}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void sendKeyPairPackage(){
+		try{
+			KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+			keyGen.initialize(1024);
+			KeyPair keyPairForA = keyGen.genKeyPair();
+			KeyPair keyPairForB = keyGen.genKeyPair();
+			PrivateKey privateA = keyPairForA.getPrivate();
+			PublicKey publicA = keyPairForA.getPublic();
+			PrivateKey privateB = keyPairForB.getPrivate();
+			PublicKey publicB = keyPairForB.getPublic();
+			
+			
+			byte[] keyOfA = Arrays.copyOf(pwHash, 16); // use only first 128 bit
+			byte[] keyOfB = Arrays.copyOf(otherUser.pwHash, 16); // use only first 128 bit
+
+			SecretKeySpec secretKeySpecA = new SecretKeySpec(keyOfA, "AES");
+			SecretKeySpec secretKeySpecB = new SecretKeySpec(keyOfB, "AES");
+			
+			Cipher cipherA = Cipher.getInstance("AES");
+			Cipher cipherB = Cipher.getInstance("AES");
+			cipherA.init(Cipher.ENCRYPT_MODE, secretKeySpecA);
+			cipherB.init(Cipher.ENCRYPT_MODE, secretKeySpecB);
+			
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
+			outputStream.write(publicB.getEncoded());
+			outputStream.write(privateA.getEncoded());
+			outputStream.write(otherName.getBytes());
+			byte[] forA = cipherA.doFinal(outputStream.toByteArray());
+			
+			outputStream = new ByteArrayOutputStream( );
+			outputStream.write(privateB.getEncoded());
+			outputStream.write(publicA.getEncoded());
+			outputStream.write(name.getBytes());
+			byte[] forB = cipherB.doFinal(outputStream.toByteArray());
+			
+			Signature sig = Signature.getInstance("SHA512withRSA");
+			sig.initSign(privateKey);
+			sig.update(forA);
+			sig.update(nonce1);
+			sig.update(forB);
+			byte[] signature = sig.sign();
+			
+			output.writeObject((byte[])forA);
+			output.writeObject((byte[])nonce1);
+			output.writeObject((byte[])forB);
+			output.writeObject((byte[])signature);
 			
 		}
 		catch(Exception e){
-			
+			System.out.println(e);
 		}
+				
 	}
 	
 	private void disconnect() throws IOException{
