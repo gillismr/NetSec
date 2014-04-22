@@ -25,8 +25,8 @@ public class SIMClient{
 	PublicKey serverKey;
 	
 	//Streams between this client and the server
-	ObjectInputStream input;
-	ObjectOutputStream output;
+	DataInputStream input;
+	DataOutputStream output;
     
     //Login
     BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
@@ -39,7 +39,7 @@ public class SIMClient{
     byte[] encryptedSendData;
     
     //Cookie
-    byte[] cookie = new byte[64];
+    byte[] cookie;
     
     //The person we're talking to
     boolean talking;
@@ -52,8 +52,8 @@ public class SIMClient{
 	//Connecting to them
 	private Socket recipientSocket;
 	private ServerSocket listening;
-	ObjectInputStream inputB;
-	ObjectOutputStream outputB;
+	DataInputStream inputB;
+	DataOutputStream outputB;
 	
 	//DiffieHellman stuff
 	BigInteger p = new BigInteger("105721529231725396278744238019721944883459258934172331899960783719893356089817034253461201515439737670361933937940217427577693473956344804895358846880822392696046488918274717636071583814523522759796204222618840365316653936434709172113382318497752088322889563530999616413642023504696663722814258660783284649709");
@@ -124,8 +124,9 @@ public class SIMClient{
 	
 	private void setServerStreams(){
 		try {
-			output = new ObjectOutputStream(server.getOutputStream());
-			input = new ObjectInputStream(server.getInputStream());}
+			output = new DataOutputStream(server.getOutputStream());
+			output.flush();
+			input = new DataInputStream(server.getInputStream());}
     	catch (Exception e){
     		System.out.println(e);}
 		System.out.println("Server streams established.");
@@ -139,6 +140,20 @@ public class SIMClient{
     		password = stdin.readLine();
 		} catch (Exception e) {
 			System.out.println(e);}
+	}
+	
+	private void writeMessage(DataOutputStream dout, byte[] msg) throws IOException {
+		int length = msg.length;
+		dout.writeInt(length);
+		dout.write(msg, 0, length);
+		dout.flush();
+	}
+
+	public byte[] readMessage(DataInputStream din) throws IOException {
+		int length = din.readInt();
+		byte[] msg = new byte[length];
+		din.readFully(msg);
+		return msg;
 	}
 	
 	private void sendCredentials(){
@@ -155,7 +170,7 @@ public class SIMClient{
 			publicChiper.init(Cipher.ENCRYPT_MODE, serverKey);
 			encryptedSendData = publicChiper.doFinal(sendData);
 			System.out.println("Send data encrypted.");
-			output.write(encryptedSendData);
+			writeMessage(output, encryptedSendData);
 			System.out.println("Credentials sent.");
 		}
 		catch (Exception e){
@@ -172,8 +187,8 @@ public class SIMClient{
 	
 	private void echoCookie(){
 		try {
-			input.readFully(cookie);
-			output.write(cookie);
+			cookie = readMessage(input);
+			writeMessage(output, cookie);
 			System.out.println("Cookie received and returned.");
 		}
 		catch(Exception e){
@@ -183,7 +198,7 @@ public class SIMClient{
 	
 	private void serverWelcome(){
 		try{
-			System.out.println((String)input.readObject());
+			System.out.println(readMessage(input).toString());
 			talking = false;
 			listening = new ServerSocket(serverPort +1);
 			new acceptConnection().start();
@@ -202,15 +217,15 @@ public class SIMClient{
 				System.out.println("Type 'logout' to logout.\n");
 				String command = stdin.readLine();
 				if(command.equalsIgnoreCase("list")){
-					output.writeObject((String)"list");
-					System.out.println((String)input.readObject());
+					writeMessage(output, "list".getBytes());
+					System.out.println(readMessage(input).toString());
 				}
 				else if(command.startsWith("send ")){
 					doSend(command.substring(5));
 				}
 				else if(command.equalsIgnoreCase("logout")){
 					System.out.println("Logging you out, come back soon!\n");
-					output.writeObject((String)"logout");
+					writeMessage(output, "logout".getBytes());
 					dcFromServer();
 					return;
 				}
@@ -237,8 +252,8 @@ public class SIMClient{
 		try{
 			
 			//Ask the server for the info to set up a connection & secretKey with the user whose name we entered
-			output.writeObject((String)"connect " + recipient);
-			String maybeFound = (String)input.readObject();
+			writeMessage(output, ("connect " + recipient).getBytes());
+			String maybeFound = readMessage(input).toString();
 			if(maybeFound.equals("none")){
 				System.out.println("No such user, try again.");
 				return;
@@ -247,13 +262,13 @@ public class SIMClient{
 			//Set the recipient's name and get their InetAddress from the server
 			talking = true;
 			recipient = newRecipient;
-			recipientINA = (InetAddress)input.readObject();
+			recipientINA = InetAddress.getByAddress(readMessage(input));
 			
 			//Get the package of materials from the server; our encrypted RSA info, the nonce, the ticket to B, and the signature
-			byte[] forA = (byte[])input.readObject();
-			byte[] nonce1Check = (byte[])input.readObject();
-			ticketToB = (byte[])input.readObject();
-			byte[] signature = (byte[])input.readObject();
+			byte[] forA = readMessage(input);
+			byte[] nonce1Check = readMessage(input);
+			ticketToB = readMessage(input);
+			byte[] signature = readMessage(input);
 			
 			//Set up the verification of the signature
 			Signature sig = Signature.getInstance("SHA512withRSA");
@@ -324,9 +339,10 @@ public class SIMClient{
 	private void connectToB(){
 		try {
 			recipientSocket = new Socket(recipientINA, serverPort + 1);
-			outputB = new ObjectOutputStream(recipientSocket.getOutputStream());
-			inputB = new ObjectInputStream(recipientSocket.getInputStream());
-			outputB.writeObject(name);
+			outputB = new DataOutputStream(recipientSocket.getOutputStream());
+			outputB.flush();
+			inputB = new DataInputStream(recipientSocket.getInputStream());
+			writeMessage(outputB, name.getBytes());
 			System.out.println("Connected to " + recipient + ", streams set up.");
 		} catch (Exception e) {
 			System.out.println(e);
@@ -339,7 +355,7 @@ public class SIMClient{
 		public void run() {
 			while(true) {
 				try {
-					String msg = (String)inputB.readObject();
+					String msg = readMessage(inputB).toString();
 					System.out.println(msg);
 
 				} catch(Exception e) {
@@ -356,11 +372,13 @@ public class SIMClient{
 				try {
 					recipientSocket = listening.accept();
 					recipientINA = recipientSocket.getInetAddress();
-					outputB = new ObjectOutputStream(recipientSocket.getOutputStream());
-					inputB = new ObjectInputStream(recipientSocket.getInputStream());
-					recipient = (String)inputB.readObject();
+					outputB = new DataOutputStream(recipientSocket.getOutputStream());
+					outputB.flush();
+					inputB = new DataInputStream(recipientSocket.getInputStream());
+					recipient = readMessage(inputB).toString();
 					System.out.println("Connected to " + recipient + ", streams set up.");
 					System.out.println("Beginning Diffie-Hellman exchange to establish perfectSecretKey");
+					
 					//Complete a signed DH exchange with B to create the perfectSecretKey
 					establishDHAsB();
 					talking = true;
@@ -376,7 +394,7 @@ public class SIMClient{
 	private void talkToB(String message){
 		try {
 
-			outputB.writeObject((String)message);
+			writeMessage(outputB, message.getBytes());
 
 		} catch (IOException e) {
 			System.out.println(e);
@@ -428,6 +446,7 @@ public class SIMClient{
 			
 			//Send B their ticket
 			outputB.writeObject((byte[])ticketToB);
+			outputB.flush();
 			
 			//Receive a cookie from B
 			byte[] cookieB = (byte[])inputB.readObject();
@@ -455,9 +474,13 @@ public class SIMClient{
 		    
 			//Send B the cookie and our half of the DH exchange, signed of course
 			outputB.writeObject((byte[])cookieB);
+			outputB.flush();
 			outputB.writeObject((byte[])name.getBytes());
+			outputB.flush();
 			outputB.writeObject((byte[])dhPublicKeyBytesA);
+			outputB.flush();
 			outputB.writeObject((byte[])signature);
+			outputB.flush();
 		    			
 		    //Retrieve the name, public key, and signature bytes from B
 			byte[] checkNameBytes = (byte[])inputB.readObject();
@@ -499,6 +522,7 @@ public class SIMClient{
 		    //Hash the psKey and send it to B
 		    MessageDigest md = MessageDigest.getInstance("SHA-512");
 		    outputB.writeObject((byte[])md.digest(perfectSecretKey.getEncoded()));
+		    outputB.flush();
 			
 		    //Receive the hash of 1 concatenated with the psKey from B
 		    byte[] keyHashToCheck = ((byte[])inputB.readObject());
@@ -575,6 +599,7 @@ public class SIMClient{
 			MessageDigest md = MessageDigest.getInstance("SHA-512");
 			byte[] cookieForA = md.digest(outputStream.toByteArray());
 			outputB.writeObject((byte[])cookieForA);
+			outputB.flush();
 			
 
 			//Get the next set of input from A
@@ -641,8 +666,11 @@ public class SIMClient{
 		    
 		    //Resume communication with A, send them our part of the signed DH exchange
 		    outputB.writeObject((byte[])name.getBytes());
+		    outputB.flush();
 		    outputB.writeObject((byte[])dhPublicKeyB.getEncoded());
+		    outputB.flush();
 		    outputB.writeObject((byte[])signature);
+		    outputB.flush();
 		    
 		    
 		    //Receive the hash of the perfectSecretKey from A 
@@ -668,6 +696,7 @@ public class SIMClient{
 			
 			//Send hash+1 to A
 			outputB.writeObject((byte[])keyHashPlus1);
+			outputB.flush();
 			
 			System.out.println("Beginning chat session with " + recipient + ". You can now send and receive messages with them.");
 			

@@ -1,11 +1,10 @@
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -42,69 +41,70 @@ import java.security.*;
 import java.security.spec.*;
 import java.util.Arrays;
 import java.io.*;
-*/
+ */
 
 
 public class SIMServer {
-	
+
 	public static void main(String[] args) throws IOException, GeneralSecurityException {
-		
+
 		@SuppressWarnings("resource")
 		ServerSocket serverSocket = new ServerSocket(9090);
 		System.out.println("Socket established");
 		byte[] privateKeyBytes = readByteFromFile(new File("priv1.class"));
-		
+
 		KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
 		PKCS8EncodedKeySpec privateSpec = new PKCS8EncodedKeySpec(privateKeyBytes);
 		PrivateKey privateKey = rsaKeyFactory.generatePrivate(privateSpec);
-		
+
 		Random rng = new SecureRandom();
-    	byte[] cookieNonce = new byte[16]; // 16 bytes = 128 bits
-    	rng.nextBytes(cookieNonce);
-    	
+		byte[] cookieNonce = new byte[16]; // 16 bytes = 128 bits
+		rng.nextBytes(cookieNonce);
+
 		while(true){
-	    	Socket clientSocket = serverSocket.accept();
-	    	ClientThread c = new ClientThread(clientSocket, privateKey, cookieNonce);
-	    	c.start();
+			Socket clientSocket = serverSocket.accept();
+			System.out.println("Socket established with someone at" + clientSocket.getInetAddress().toString());
+			ClientThread c = new ClientThread(clientSocket, privateKey, cookieNonce);
+			c.start();
 		}
-		
+
 	}
-	
+
 	// read bytes from a file
 	public static byte[] readByteFromFile(File f) throws IOException{
 		if (f.length() > Integer.MAX_VALUE)
 			System.out.println("File is too large");
-			
+
 		byte[] buffer = new byte[(int) f.length()];
 		InputStream fis = new FileInputStream(f);;
 		DataInputStream dis = new DataInputStream(fis);
 		dis.readFully(buffer);
 		dis.close();
 		fis.close();
-		
+
 		return buffer;
 	}
 }
 
 class ClientEntry{
-	
+
 	public String name;
 	public byte[] pwHash;
 	public InetAddress ip;
 	public boolean available;
-	
-		
+
+
 	public ClientEntry(String name, byte[] pwHash, InetAddress ip, boolean available){
 		this.name = name;
 		this.pwHash = pwHash;
 		this.ip = ip;
 		this.available = available;
 	}
-	
+
 	public void setIP(InetAddress newIP){
 		this.ip = newIP;
 	}
-		
+
 	public void setAvailable(boolean available){
 		this.available = available;
 	}
@@ -113,9 +113,9 @@ class ClientEntry{
 
 
 class ClientThread extends Thread {
-	
-	private ObjectInputStream input = null;
-	private ObjectOutputStream output = null;
+
+	private DataInputStream input = null;
+	private DataOutputStream output = null;
 	private Socket clientSocket = null;
 	private PrivateKey privateKey;
 	private byte[] cookieNonce;
@@ -126,13 +126,14 @@ class ClientThread extends Thread {
 	String name;
 	String otherName;
 	ClientEntry otherUser;
-	
+
 	private static final List<ClientEntry> clients = new ArrayList<ClientEntry>();
 
 	public ClientThread(Socket clientSocket, PrivateKey privateKey, byte[] cookieNonce) throws IOException, NoSuchAlgorithmException {
 		this.clientSocket = clientSocket;
-		this.input = new ObjectInputStream(clientSocket.getInputStream());
-		this.output = new ObjectOutputStream(clientSocket.getOutputStream());
+		this.input = new DataInputStream(clientSocket.getInputStream());
+		this.output = new DataOutputStream(clientSocket.getOutputStream());
+		output.flush();
 		this.privateKey = privateKey;
 		this.cookieNonce = cookieNonce;
 	}
@@ -140,29 +141,34 @@ class ClientThread extends Thread {
 	public void run() {
 		byte[] initialCreds;
 		try {
-			initialCreds = (byte[])input.readObject();
+			System.out.println("Thread started. Waiting for login credentials.");
+			initialCreds = readMessage();
 			System.out.println("Initial credentials received, sending cookie.");
-			output.writeObject((byte[])makeCookie());
+			writeMessage(makeCookie());
+
 			System.out.println("Cookie sent, awaiting response.");
-			if(!checkCookie((byte[])input.readObject())){
+			byte[] echoedCookie = readMessage(); 
+			if(!checkCookie(echoedCookie)){
+				System.out.println("Cookie mismatch.");
 				disconnect();
 				return;
 			}
-			
+
+
 			System.out.println("Cookie received, IP address verified. Decrypting initial credentials.");
 			Cipher privateCipher = Cipher.getInstance("RSA");
 			privateCipher.init(Cipher.DECRYPT_MODE, privateKey);
 			byte[] decryptedCreds = privateCipher.doFinal(initialCreds);
-			
+
 			System.out.println("Credentials decrypted. Seperating peices.");
 			nonce1 = Arrays.copyOfRange(decryptedCreds, 0, 16);
 			pwHash = Arrays.copyOfRange(decryptedCreds, 16, 80);
 			nameBytes = Arrays.copyOfRange(decryptedCreds, 80, decryptedCreds.length);
 			name = new String(nameBytes);
-			
+
 			System.out.println("Credentials separated for user " + name + ". Checking login history...");
 			clientIndex = getClientIndex(name);
-			
+
 			if(clientIndex == -1){
 				System.out.println("New user detected, creating new client entry. Better hope they used the correct password...");
 				clientEntry = new ClientEntry(name, pwHash, clientSocket.getInetAddress(), true);
@@ -176,28 +182,43 @@ class ClientThread extends Thread {
 			}
 			else{
 				System.out.println("Incorrect PW, terminating session.");
-				output.writeObject((String)"Incorrect PW, terminating session.");
+				writeMessage("Incorrect PW, terminating session.".getBytes());
+
 				disconnect();
 				return;
 			}
-			
-			output.writeObject((String)"Welcome, " + name + ".\n");
-			
+
+			writeMessage(("Welcome, " + name + ".\n").getBytes());
+
 			processCommand();
-			
-			
+
+
 		} 
 		catch (Exception e) {
 		}
 	}
-	
+
+	private void writeMessage(byte[] msg) throws IOException {
+		int length = msg.length;
+		output.writeInt(length);
+		output.write(msg, 0, length);
+		output.flush();
+	}
+
+	public byte[] readMessage() throws IOException {
+		int msgLen = input.readInt();
+		byte[] msg = new byte[msgLen];
+		input.readFully(msg);
+		return msg;
+	}
 
 	private void processCommand(){
 		while(true){
 			try{
-				String command = (String)input.readObject();
+				String command = readMessage().toString();
 				if(command.equalsIgnoreCase("list")){
-					output.writeObject((String)listClients());
+					writeMessage(listClients());
+
 				}
 				else if(command.startsWith("connect ")){
 					startPreparingKeyPair(command.substring(8));
@@ -208,7 +229,8 @@ class ClientThread extends Thread {
 					return;
 				}
 				else{
-					output.writeObject((String)"Bad input, try again.\n");
+					writeMessage("Bad input, try again.\n".getBytes());
+
 				}
 			}
 			catch(Exception e){
@@ -216,26 +238,26 @@ class ClientThread extends Thread {
 			}
 		}
 	}
-	
+
 	private void startPreparingKeyPair(String maybeName){
 		try{
 			int otherIndex = getClientIndex(maybeName);
 			if(otherIndex == -1 || !clients.get(otherIndex).available){
-				output.writeObject((String)"none");
+				writeMessage("none".getBytes());
 				return;
 			}
-			output.writeObject((String)"found");
+			writeMessage("found".getBytes());
 			otherUser = clients.get(otherIndex);
 			otherName = maybeName;
-			output.writeObject((InetAddress)otherUser.ip);
+			writeMessage(otherUser.ip.getAddress());
 			sendKeyPairPackage();
-					
+
 		}
 		catch(Exception e){
 			System.out.println(e);
 		}
 	}
-	
+
 	private void sendKeyPairPackage(){
 		try{
 			KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
@@ -246,56 +268,56 @@ class ClientThread extends Thread {
 			PublicKey publicA = keyPairForA.getPublic();
 			PrivateKey privateB = keyPairForB.getPrivate();
 			PublicKey publicB = keyPairForB.getPublic();
-			
-			
+
+
 			byte[] keyOfA = Arrays.copyOf(pwHash, 16); // use only first 128 bit
 			byte[] keyOfB = Arrays.copyOf(otherUser.pwHash, 16); // use only first 128 bit
 
 			SecretKeySpec secretKeySpecA = new SecretKeySpec(keyOfA, "AES");
 			SecretKeySpec secretKeySpecB = new SecretKeySpec(keyOfB, "AES");
-			
+
 			Cipher cipherA = Cipher.getInstance("AES");
 			Cipher cipherB = Cipher.getInstance("AES");
 			cipherA.init(Cipher.ENCRYPT_MODE, secretKeySpecA);
 			cipherB.init(Cipher.ENCRYPT_MODE, secretKeySpecB);
-			
+
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
 			outputStream.write(publicB.getEncoded());
 			outputStream.write(privateA.getEncoded());
 			outputStream.write(otherName.getBytes());
 			byte[] forA = cipherA.doFinal(outputStream.toByteArray());
-			
+
 			outputStream = new ByteArrayOutputStream( );
 			outputStream.write(privateB.getEncoded());
 			outputStream.write(publicA.getEncoded());
 			outputStream.write(name.getBytes());
 			byte[] forB = cipherB.doFinal(outputStream.toByteArray());
-			
+
 			Signature sig = Signature.getInstance("SHA512withRSA");
 			sig.initSign(privateKey);
 			sig.update(forA);
 			sig.update(nonce1);
 			sig.update(forB);
 			byte[] signature = sig.sign();
-			
-			output.writeObject((byte[])forA);
-			output.writeObject((byte[])nonce1);
-			output.writeObject((byte[])forB);
-			output.writeObject((byte[])signature);
-			
+
+			writeMessage(forA);
+			writeMessage(nonce1);
+			writeMessage(forB);
+			writeMessage(signature);
+
 		}
 		catch(Exception e){
 			System.out.println(e);
 		}
-				
+
 	}
-	
+
 	private void disconnect() throws IOException{
 		input.close();
 		output.close();
 		clientSocket.close();
 	}
-	
+
 	private byte[] makeCookie() throws Exception{
 		byte[] ip = this.clientSocket.getInetAddress().getAddress();
 		ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
@@ -304,13 +326,13 @@ class ClientThread extends Thread {
 		MessageDigest md = MessageDigest.getInstance("SHA-512");
 		return md.digest(outputStream.toByteArray());
 	}
-	
+
 	private boolean checkCookie(byte[] providedCookie) throws Exception{
 		byte[] freshCookie = makeCookie();
 		return (providedCookie == freshCookie);
 	}
-	
-	
+
+
 	//Returns the index of the clients login/session info if they are known. Returns -1 if they are unknown
 	private int getClientIndex(String name){
 		for(ClientEntry ce:clients){
@@ -320,31 +342,31 @@ class ClientThread extends Thread {
 		}
 		return -1;
 	}
-	
+
 	private boolean correctPassword(){
 		return (pwHash == clients.get(clientIndex).pwHash);
 	}
-	
-	private String listClients() throws IOException{
+
+	private byte[] listClients() throws IOException{
 		String listOfClients = "";
 		for(ClientEntry ce:clients){
 			if(!ce.name.equals(name) && ce.available){
 				listOfClients += ("\n" + ce.name);
 			}
 		}	
-		return listOfClients;
+		return listOfClients.getBytes();
 	}
 }
-	
-		
-	
-	
-	
-	
-	
-	
 
-	
+
+
+
+
+
+
+
+
+
 
 
 
