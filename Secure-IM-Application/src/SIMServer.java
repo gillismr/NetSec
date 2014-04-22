@@ -1,24 +1,15 @@
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.PrintStream;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.SocketAddress;
 import java.security.GeneralSecurityException;
-import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -29,7 +20,6 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
-import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -61,6 +51,7 @@ public class SIMServer {
 		
 		@SuppressWarnings("resource")
 		ServerSocket serverSocket = new ServerSocket(9090);
+		System.out.println("Socket established");
 		byte[] privateKeyBytes = readByteFromFile(new File("priv1.class"));
 		
 		KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
@@ -131,7 +122,7 @@ class ClientThread extends Thread {
 	private byte[] nonce1, pwHash, nameBytes;
 	private int clientIndex;
 	private ClientEntry clientEntry;
-	private InetAddress ip;
+	//private InetAddress ip;
 	String name;
 	String otherName;
 	ClientEntry otherUser;

@@ -7,7 +7,6 @@ import java.util.*;
 
 import javax.crypto.*;
 import javax.crypto.spec.DHParameterSpec;
-import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -43,6 +42,7 @@ public class SIMClient{
     byte[] cookie = new byte[64];
     
     //The person we're talking to
+    boolean talking;
     InetAddress recipientINA;
 	String recipient;
     PrivateKey signatureKey;
@@ -60,12 +60,7 @@ public class SIMClient{
 	BigInteger g = new BigInteger("62951193033649707239238510868644285309198569779488005138430533330591756100547054332779476210740737931462466271496214673336150099168994589303046765366535435267910408582532215038620252157609127503823477022010406010833479619195676348865393025560501628436016618301150440981638807075483419386887089022419473465714");
 	int l = 1023;
 	SecretKey perfectSecretKey;
-	
-	//If this client is "B", we need info on our connection to A
-	ObjectInputStream inputA;
-	ObjectOutputStream outputA;
-	
-	
+			
 	
 	public SIMClient(){
 		
@@ -189,6 +184,9 @@ public class SIMClient{
 	private void serverWelcome(){
 		try{
 			System.out.println((String)input.readObject());
+			talking = false;
+			listening = new ServerSocket(serverPort +1);
+			new acceptConnection().start();
 		}
 		catch (Exception e){
 			System.out.println(e);
@@ -230,9 +228,15 @@ public class SIMClient{
 		String newRecipient = nameAndMsg.substring(0, endNameIndex);
 		String message = nameAndMsg.substring(endNameIndex + 1);
 		
-		//if(haveCreds && haveDH)...
+		if(newRecipient.equals(recipient)){
+			System.out.println("Still talking to " + recipient + ", assuming SecretKey is already in place.");
+			talkToB(message);
+			return;
+		}
 		
 		try{
+			
+			//Ask the server for the info to set up a connection & secretKey with the user whose name we entered
 			output.writeObject((String)"connect " + recipient);
 			String maybeFound = (String)input.readObject();
 			if(maybeFound.equals("none")){
@@ -240,54 +244,76 @@ public class SIMClient{
 				return;
 			}
 			
+			//Set the recipient's name and get their InetAddress from the server
+			talking = true;
 			recipient = newRecipient;
 			recipientINA = (InetAddress)input.readObject();
 			
+			//Get the package of materials from the server; our encrypted RSA info, the nonce, the ticket to B, and the signature
 			byte[] forA = (byte[])input.readObject();
 			byte[] nonce1Check = (byte[])input.readObject();
 			ticketToB = (byte[])input.readObject();
 			byte[] signature = (byte[])input.readObject();
 			
+			//Set up the verification of the signature
 			Signature sig = Signature.getInstance("SHA512withRSA");
 			sig.initVerify(serverKey);
 			sig.update(forA);
 			sig.update(nonce1Check);
 			sig.update(ticketToB);
 			
-			// Verify the signature of the above data
+			// Verify the signature of the final message from the server
 			if(!sig.verify(signature)){
 				System.out.println("Signature verification failed.");
 				return;
 			}
+			
+			//Check that the nonce is what it should be
 			if(nonce1 != nonce1Check){
 				System.out.println("The nonce was different.");
 				return;
 			}
 			
+			//Get our password hash ready to use as a bootstrapped AES key
 			byte[] keyOfA = Arrays.copyOf(pwHash, 16); // use only first 128 bit
+			
+			//Decrypt our half of the RSA package
 			SecretKeySpec secretKeySpecA = new SecretKeySpec(keyOfA, "AES");
 			Cipher secCipher = Cipher.getInstance("AES");
 			secCipher.init(Cipher.DECRYPT_MODE, secretKeySpecA);
 			byte[] decryptedToCheck = secCipher.doFinal(forA);
 			
+			//Break the decrypted RSA package into its parts
 			byte[] signatureKeyBytes = Arrays.copyOfRange(decryptedToCheck, 0, 128);
 			byte[] verifyKeyBytes = Arrays.copyOfRange(decryptedToCheck, 128, 256);
 			byte[] otherNameBytes = Arrays.copyOfRange(decryptedToCheck, 256, decryptedToCheck.length);
 			String nameToCheck = new String(otherNameBytes);
 			
-			if(!nameToCheck.equals(newRecipient)){
+			//Check that the name matches
+			if(!nameToCheck.equals(recipient)){
 				System.out.println("These are credentials for the wrong person!");
 				return;
 			}
 			
+			//Convert the RSA key byte[]s to RSA keys for signature and verification of the DH exchange
 			KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
 			PKCS8EncodedKeySpec privateSpec = new PKCS8EncodedKeySpec(signatureKeyBytes);
 			X509EncodedKeySpec publicSpec = new X509EncodedKeySpec(verifyKeyBytes);
 			signatureKey = rsaKeyFactory.generatePrivate(privateSpec);
 			verificationKey = rsaKeyFactory.generatePublic(publicSpec);
 			
+			//Prepare to communicate with B
 			connectToB();
+			
+			System.out.println("Beginning Diffie-Hellman exchange to establish perfectSecretKey");
+			//Complete a signed DH exchange with B to create the perfectSecretKey
 			establishDHAsA();
+			
+			//Start listening to their encrypted messages
+			new ListenToB().start();
+			
+			//Actually send the message
+			talkToB(message);
 			
 		}
 		catch(Exception e){
@@ -300,19 +326,114 @@ public class SIMClient{
 			recipientSocket = new Socket(recipientINA, serverPort + 1);
 			outputB = new ObjectOutputStream(recipientSocket.getOutputStream());
 			inputB = new ObjectInputStream(recipientSocket.getInputStream());
+			outputB.writeObject(name);
 			System.out.println("Connected to " + recipient + ", streams set up.");
 		} catch (Exception e) {
 			System.out.println(e);
 		}
 	}
 	
+	
+	//A Thread extension for receiving messages from the user we're connected to 
+	class ListenToB extends Thread {
+		public void run() {
+			while(true) {
+				try {
+					String msg = (String)inputB.readObject();
+					System.out.println(msg);
+
+				} catch(Exception e) {
+					System.out.println(e);
+				}
+			}
+		}
+	}
+
+	//A Thread extension for receiving messages from the user we're connected to 
+	class acceptConnection extends Thread {
+		public void run() {
+			while(!talking) {
+				try {
+					recipientSocket = listening.accept();
+					recipientINA = recipientSocket.getInetAddress();
+					outputB = new ObjectOutputStream(recipientSocket.getOutputStream());
+					inputB = new ObjectInputStream(recipientSocket.getInputStream());
+					recipient = (String)inputB.readObject();
+					System.out.println("Connected to " + recipient + ", streams set up.");
+					System.out.println("Beginning Diffie-Hellman exchange to establish perfectSecretKey");
+					//Complete a signed DH exchange with B to create the perfectSecretKey
+					establishDHAsB();
+					talking = true;
+					//Start listening to their encrypted messages
+					new ListenToB().start();
+				} catch(Exception e) {
+					System.out.println(e);
+				}
+			}
+		}
+	}
+
+	private void talkToB(String message){
+		try {
+
+			outputB.writeObject((String)message);
+
+		} catch (IOException e) {
+			System.out.println(e);
+		}
+	}
+	
+	private void dcFromServer(){
+		try{
+			input.close();
+			output.close();
+			server.close();}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	/*
+	private void forgetRecipient(){
+		recipient = null;
+		signatureKey = null;
+		verificationKey = null;
+	}
+	
+	private void dcFromB(){
+		try{
+			inputB.close();
+			outputB.close();
+			recipientSocket.close();
+			
+		}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	
+	private void dcFromA(){
+		try{
+			inputB.close();
+			outputB.close();
+			recipientSocket.close();
+			
+		}
+		catch(Exception e){
+			System.out.println(e);
+		}
+	}
+	*/
 	private void establishDHAsA(){
 		try {
+			
+			//Send B their ticket
 			outputB.writeObject((byte[])ticketToB);
+			
+			//Receive a cookie from B
 			byte[] cookieB = (byte[])inputB.readObject();
 			
-			
-			// Use the values to generate a key pair
+			//Prepare our half of the DH exchange
+			//Use the hard-coded values to generate our DH key Classes: the internal and external halves of our half of the DH exchange
 		    KeyPairGenerator dhKeyGen = KeyPairGenerator.getInstance("DH");
 		    DHParameterSpec dhSpec = new DHParameterSpec(p, g, l);
 		    dhKeyGen.initialize(dhSpec);
@@ -322,27 +443,29 @@ public class SIMClient{
 		    PrivateKey dhPrivateKeyA = dhKeyPair.getPrivate();
 		    PublicKey dhPublicKeyA = dhKeyPair.getPublic();
 
-		    // Send the public key bytes to the other party signed with our private key
+		    //Prepare our DH contribution for sending it to B
 		    byte[] dhPublicKeyBytesA = dhPublicKeyA.getEncoded();
 		    
+		    //Sign our half of the DH exchange and the other info
 		    Signature signMyDH = Signature.getInstance("SHA512withRSA");
 		    signMyDH.initSign(signatureKey);
 		    signMyDH.update(name.getBytes());
 		    signMyDH.update(dhPublicKeyBytesA);
 			byte[] signature = signMyDH.sign();
 		    
+			//Send B the cookie and our half of the DH exchange, signed of course
 			outputB.writeObject((byte[])cookieB);
 			outputB.writeObject((byte[])name.getBytes());
 			outputB.writeObject((byte[])dhPublicKeyBytesA);
 			outputB.writeObject((byte[])signature);
-		    
-			
-		    // Retrieve the name, public key, and signature bytes of the other party
+		    			
+		    //Retrieve the name, public key, and signature bytes from B
 			byte[] checkNameBytes = (byte[])inputB.readObject();
 			byte[] publicKeyBytesB = (byte[])inputB.readObject();
 			byte[] signatureB = (byte[])inputB.readObject();
 			String checkName = new String(checkNameBytes);
 			
+			//Prep the signature for verification
 			Signature verifyHisDH = Signature.getInstance("SHA512withRSA");
 			verifyHisDH.initVerify(verificationKey);
 			verifyHisDH.update(checkNameBytes);
@@ -353,6 +476,7 @@ public class SIMClient{
 				System.out.println("Signature verification failed.");
 				return;
 			}
+			//Verify the name
 			if(!checkName.equals(recipient)){
 				System.out.println("This is a key for the wrong person!");
 				return;
@@ -364,7 +488,7 @@ public class SIMClient{
 		    KeyFactory keyFact = KeyFactory.getInstance("DH");
 		    PublicKey dhPublicKeyB = keyFact.generatePublic(x509KeySpec);
 
-		    // Prepare to generate the secret key with the private key and public key of the other party
+		    // Prepare to generate the secret key with the our private half of the DH key and B's public part of it
 		    KeyAgreement ka = KeyAgreement.getInstance("DH");
 		    ka.init(dhPrivateKeyA);
 		    ka.doPhase(dhPublicKeyB, true);
@@ -372,27 +496,31 @@ public class SIMClient{
 		    // Generate the secret key
 		    perfectSecretKey = ka.generateSecret("DES");
 		    
-		    //Hash, send, check, then done
+		    //Hash the psKey and send it to B
 		    MessageDigest md = MessageDigest.getInstance("SHA-512");
 		    outputB.writeObject((byte[])md.digest(perfectSecretKey.getEncoded()));
-			byte[] keyHashToCheck = ((byte[])inputB.readObject());
 			
+		    //Receive the hash of 1 concatenated with the psKey from B
+		    byte[] keyHashToCheck = ((byte[])inputB.readObject());
+			
+		    //Compute hash(1|psKey) ourselves
 			byte[] oneByte = new byte[1];
 			oneByte[0] = 1;
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
 			outputStream.write(oneByte);
 			outputStream.write(perfectSecretKey.getEncoded());
 			byte[] keyBytesPlus1 = outputStream.toByteArray();
-			byte[] keyHashToCheckAgainst = md.digest(keyBytesPlus1);
+			byte[] keyHashPlus1 = md.digest(keyBytesPlus1);
 			
-			if(keyHashToCheck != keyHashToCheckAgainst){
+			//Check that it matches what B sent us
+			if(keyHashToCheck != keyHashPlus1){
 				System.out.println("Hash check failed, perfectSecretKey mismatch?");
 				return;
 			}
 			
 			//ALRIGHT, we're ready to talk!
 			System.out.println("Secret key established for talking to " + recipient + ", sending message.");
-			talkToB();
+			
 			
 		} catch (Exception e) {
 			System.out.println(e);
@@ -401,57 +529,79 @@ public class SIMClient{
 	
 	private void establishDHAsB(){
 		try {
-			byte[] myTicket = (byte[])inputA.readObject();
 			
+			//Receive our ticket from A
+			byte[] myTicket = (byte[])inputB.readObject();
+			
+			//Decrypt the ticket into its byte[]
 			byte[] keyOfB = Arrays.copyOf(pwHash, 16); // use only first 128 bit
 			SecretKeySpec secretKeySpec = new SecretKeySpec(keyOfB, "AES");
 			Cipher cipher = Cipher.getInstance("AES");
 			cipher.init(Cipher.DECRYPT_MODE, secretKeySpec);
 			byte[] decryptedTicket = cipher.doFinal(myTicket);
-			//Continue here...
+			
+			//Break the decrypted ticket into its pieces
 			byte[] signatureKeyBytes = Arrays.copyOfRange(decryptedTicket, 0, 128);
 			byte[] verifyKeyBytes = Arrays.copyOfRange(decryptedTicket, 128, 256);
 			byte[] otherNameBytes = Arrays.copyOfRange(decryptedTicket, 256, decryptedTicket.length);
 			String nameToCheck = new String(otherNameBytes);
 			
+			//Check that it's for the initiating person
+			if(!nameToCheck.equals(recipient)){
+				System.out.println("These are credentials for the wrong person!");
+				return;
+			}
+			
+			//Convert the keyByte[]s into the RSA keys for the DH exchange
+			KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
+			PKCS8EncodedKeySpec privateSpec = new PKCS8EncodedKeySpec(signatureKeyBytes);
+			X509EncodedKeySpec publicSpec = new X509EncodedKeySpec(verifyKeyBytes);
+			signatureKey = rsaKeyFactory.generatePrivate(privateSpec);
+			verificationKey = rsaKeyFactory.generatePublic(publicSpec);
+			
+			//Make a nonce for the cookie
 			Random rng = new SecureRandom();
 			byte[] nonce2 = new byte[16];
 			rng.nextBytes(nonce2); // 16 bytes = 128 bits
 			
-			//The next line is wrong, we need to get A's address, not ours..
-			byte[] ipOfA = listening.getInetAddress().getAddress();
+			//Get the IP for the cookie
+			byte[] ipOfA = recipientSocket.getInetAddress().getAddress();
+			
+			
+			//Make the cookie, hash it, send it
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
 			outputStream.write(ipOfA);
 			outputStream.write(nonce2);
 			MessageDigest md = MessageDigest.getInstance("SHA-512");
 			byte[] cookieForA = md.digest(outputStream.toByteArray());
-			outputA.writeObject((byte[])cookieForA);
+			outputB.writeObject((byte[])cookieForA);
 			
 
-			byte[] cookieToCheck = (byte[])inputA.readObject();
-			byte[] nameBytesOfA = (byte[])inputA.readObject();
-			byte[] dhPublicKeyBytesA = (byte[])inputA.readObject();
-			byte[] signatureOfA = (byte[])inputA.readObject();
-		    
+			//Get the next set of input from A
+			byte[] cookieToCheck = (byte[])inputB.readObject();
+			byte[] nameBytesOfA = (byte[])inputB.readObject();
+			byte[] dhPublicKeyBytesA = (byte[])inputB.readObject();
+			byte[] signatureOfA = (byte[])inputB.readObject();
+			String checkName = new String(nameBytesOfA);
+						
 			//Check the cookie
 			if(cookieToCheck != cookieForA){
 				System.out.println("Cookie check failed.");
 			}
 			
-			String checkName = new String(nameBytesOfA);
-			
+			//Set up the signature verification of the DH exchange
 			Signature verifyHisDH = Signature.getInstance("SHA512withRSA");
 			verifyHisDH.initVerify(verificationKey);
 			verifyHisDH.update(nameBytesOfA);
 			verifyHisDH.update(dhPublicKeyBytesA);
 						
-			// Verify the signature of the above data
+			//Verify the signature of the DH exchange
 			if(!verifyHisDH.verify(signatureOfA)){
 				System.out.println("Signature verification failed.");
 				return;
 			}
 			
-			//Should it really be RECIPIENT?
+			//Check that the name in the signed DH exchange matches the initiating user 
 			if(!checkName.equals(recipient)){
 				System.out.println("This is a key for the wrong person!");
 				return;
@@ -482,28 +632,32 @@ public class SIMClient{
 		    perfectSecretKey = ka.generateSecret("DES");
 			
 		    
-		    //Sign our stuff
+		    //Sign our half of the DH exchange
 		    Signature signMyDH = Signature.getInstance("SHA512withRSA");
 		    signMyDH.initSign(signatureKey);
 		    signMyDH.update(name.getBytes());
 		    signMyDH.update(dhPublicKeyB.getEncoded());
 			byte[] signature = signMyDH.sign();
 		    
-		    //Resume communication with A
-		    outputA.writeObject((byte[])name.getBytes());
-		    outputA.writeObject((byte[])dhPublicKeyB.getEncoded());
-		    outputA.writeObject((byte[])signature);
+		    //Resume communication with A, send them our part of the signed DH exchange
+		    outputB.writeObject((byte[])name.getBytes());
+		    outputB.writeObject((byte[])dhPublicKeyB.getEncoded());
+		    outputB.writeObject((byte[])signature);
 		    
 		    
-		    //receive hash, check, hash+1, send, done
-		    byte[] keyHashToCheck = (byte[])inputA.readObject();
+		    //Receive the hash of the perfectSecretKey from A 
+		    byte[] keyHashToCheck = (byte[])inputB.readObject();
+		    
+		    //Hash our copy of the psKey 
 		    byte[] keyHash = md.digest(perfectSecretKey.getEncoded());  
 		    
+		    //Check that the hashes match
 		    if(keyHashToCheck != keyHash){
 				System.out.println("Hash check failed, perfectSecretKey mismatch?");
 				return;
 			}
 			
+		    //Compute the hash of 1 concatenated with the psKey
 			byte[] oneByte = new byte[1];
 			oneByte[0] = 1;
 			outputStream = new ByteArrayOutputStream( );
@@ -512,43 +666,20 @@ public class SIMClient{
 			byte[] keyBytesPlus1 = outputStream.toByteArray();
 			byte[] keyHashPlus1 = md.digest(keyBytesPlus1);
 			
-			outputA.writeObject((byte[])keyHashPlus1);
+			//Send hash+1 to A
+			outputB.writeObject((byte[])keyHashPlus1);
 			
 			System.out.println("Beginning chat session with " + recipient + ". You can now send and receive messages with them.");
-						
+			
+			//Then we should receive their message and be able to send them our own...
 		
 		} catch (Exception e) {
 			System.out.println(e);
 		}
 	}
 	
-	private void dcFromServer(){
-		try{
-			input.close();
-			output.close();
-			server.close();}
-		catch(Exception e){
-			System.out.println(e);
-		}
-	}
 	
-	private void forgetRecipient(){
-		recipient = null;
-		signatureKey = null;
-		verificationKey = null;
-	}
 	
-	private void dcFromB(){
-		try{
-			inputB.close();
-			outputB.close();
-			recipientSocket.close();
-			
-		}
-		catch(Exception e){
-			System.out.println(e);
-		}
-	}
 	// read bytes from a file
 	public static byte[] readByteFromFile(File f) throws Exception {
 		if (f.length() > Integer.MAX_VALUE)
