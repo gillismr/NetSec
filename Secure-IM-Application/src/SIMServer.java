@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -170,10 +171,11 @@ class ClientThread extends Thread {
 			clientIndex = getClientIndex(name);
 
 			if(clientIndex == -1){
-				System.out.println("New user detected, creating new client entry. Better hope they used the correct password...");
+				System.out.println("New user detected, creating new client entry.");
 				clientEntry = new ClientEntry(name, pwHash, clientSocket.getInetAddress(), true);
 				clients.add(clientEntry);
 				clientIndex = clients.indexOf(clientEntry);
+				System.out.println(name + " listed as client #" + clientIndex);
 			}
 			else if (correctPassword()){
 				System.out.println("Password verified. Updating IP address and availability for this session.");
@@ -213,9 +215,9 @@ class ClientThread extends Thread {
 	}
 
 	private void processCommand(){
-		while(true){
+		while(!clientSocket.isClosed()){
 			try{
-				String command = readMessage().toString();
+				String command = new String(readMessage());
 				if(command.equalsIgnoreCase("list")){
 					writeMessage(listClients());
 
@@ -241,7 +243,11 @@ class ClientThread extends Thread {
 
 	private void startPreparingKeyPair(String maybeName){
 		try{
+			System.out.println("Looking for client \"" + maybeName + "\" in the list of clients." );
+			
 			int otherIndex = getClientIndex(maybeName);
+			System.out.println("Client found at index " + otherIndex);
+			
 			if(otherIndex == -1 || !clients.get(otherIndex).available){
 				writeMessage("none".getBytes());
 				return;
@@ -268,8 +274,17 @@ class ClientThread extends Thread {
 			PublicKey publicA = keyPairForA.getPublic();
 			PrivateKey privateB = keyPairForB.getPrivate();
 			PublicKey publicB = keyPairForB.getPublic();
-
-
+			
+			byte[] publicBBytes = publicB.getEncoded();
+			byte[] privateABytes = privateA.getEncoded();
+			byte[] privateBBytes = privateB.getEncoded();
+			byte[] publicABytes = publicA.getEncoded();
+			
+			byte[] forAprivALength = ByteBuffer.allocate(4).putInt(privateABytes.length).array();
+			byte[] forApubBLength = ByteBuffer.allocate(4).putInt(publicBBytes.length).array();
+			byte[] forBprivBLength = ByteBuffer.allocate(4).putInt(privateBBytes.length).array();
+			byte[] forBpubALength = ByteBuffer.allocate(4).putInt(publicABytes.length).array();
+			
 			byte[] keyOfA = Arrays.copyOf(pwHash, 16); // use only first 128 bit
 			byte[] keyOfB = Arrays.copyOf(otherUser.pwHash, 16); // use only first 128 bit
 
@@ -282,12 +297,16 @@ class ClientThread extends Thread {
 			cipherB.init(Cipher.ENCRYPT_MODE, secretKeySpecB);
 
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
-			outputStream.write(publicB.getEncoded());
+			outputStream.write(forAprivALength);
+			outputStream.write(forApubBLength);
 			outputStream.write(privateA.getEncoded());
+			outputStream.write(publicB.getEncoded());
 			outputStream.write(otherName.getBytes());
 			byte[] forA = cipherA.doFinal(outputStream.toByteArray());
 
 			outputStream = new ByteArrayOutputStream( );
+			outputStream.write(forBprivBLength);
+			outputStream.write(forBpubALength);
 			outputStream.write(privateB.getEncoded());
 			outputStream.write(publicA.getEncoded());
 			outputStream.write(name.getBytes());
@@ -329,7 +348,7 @@ class ClientThread extends Thread {
 
 	private boolean checkCookie(byte[] providedCookie) throws Exception{
 		byte[] freshCookie = makeCookie();
-		return (providedCookie == freshCookie);
+		return (Arrays.equals(providedCookie, freshCookie));
 	}
 
 
@@ -344,7 +363,7 @@ class ClientThread extends Thread {
 	}
 
 	private boolean correctPassword(){
-		return (pwHash == clients.get(clientIndex).pwHash);
+		return (Arrays.equals(pwHash, clients.get(clientIndex).pwHash));
 	}
 
 	private byte[] listClients() throws IOException{
