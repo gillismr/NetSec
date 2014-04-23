@@ -122,7 +122,7 @@ public class SIMClient{
 			serverKey = rsaKeyFactory.generatePublic(publicSpec);}
 		catch (Exception e) {
 			System.out.println(e);}
-		System.out.println("Server public key found and imported.");
+		//System.out.println("Server public key found and imported.");
 	}
 	
 	private void setServerStreams(){
@@ -132,7 +132,7 @@ public class SIMClient{
 			input = new DataInputStream(server.getInputStream());}
     	catch (Exception e){
     		System.out.println(e);}
-		System.out.println("Server streams established.");
+		//System.out.println("Server streams established.");
 	}
 	
 	private void setLoginInfo(){
@@ -163,18 +163,18 @@ public class SIMClient{
 		try{
 			Random rng = new SecureRandom();
 			rng.nextBytes(nonce1); // 16 bytes = 128 bits
-			System.out.println("Nonce chosen.");
+			//System.out.println("Nonce chosen.");
 			MessageDigest md = MessageDigest.getInstance("SHA-512");
 			pwHash = md.digest(password.getBytes()); // 64 bytes = 512 bits
-			System.out.println("Password hashed.");
+			//System.out.println("Password hashed.");
 			sendData = makeLoginCreds(nonce1, pwHash, name);
-	    	System.out.println("Send data prepared.");
+	    	//System.out.println("Send data prepared.");
 	    	Cipher publicChiper = Cipher.getInstance("RSA");
 			publicChiper.init(Cipher.ENCRYPT_MODE, serverKey);
 			encryptedSendData = publicChiper.doFinal(sendData);
-			System.out.println("Send data encrypted.");
+			//System.out.println("Send data encrypted.");
 			writeMessage(output, encryptedSendData);
-			System.out.println("Credentials sent.");
+			//System.out.println("Credentials sent.");
 		}
 		catch (Exception e){
 			System.out.println(e);}
@@ -192,7 +192,7 @@ public class SIMClient{
 		try {
 			cookie = readMessage(input);
 			writeMessage(output, cookie);
-			System.out.println("Cookie received and returned.");
+			//System.out.println("Cookie received and returned.");
 		}
 		catch(Exception e){
 			System.out.println(e);
@@ -213,11 +213,13 @@ public class SIMClient{
 	
 	private void processCommand(){
 		try{
+			
+			System.out.println("Type 'list' for a list of available users.");
+			System.out.println("Type 'send <USER> <MESSAGE>' to send that user a message.");
+			System.out.println("Type 'logout' to logout. (THIS DOESN'T WORK)");
+			
 			while(true){
-		
-				System.out.println("Type 'list' for a list of available users.");
-				System.out.println("Type 'send <USER> <MESSAGE>' to send that user a message.");
-				System.out.println("Type 'logout' to logout.");
+						
 				String command = stdin.readLine();
 				
 				if(command.equalsIgnoreCase("list")){
@@ -237,6 +239,9 @@ public class SIMClient{
 				}
 				else{
 					System.out.println("Bad input, try again.\n");
+					System.out.println("Type 'list' for a list of available users.");
+					System.out.println("Type 'send <USER> <MESSAGE>' to send that user a message.");
+					System.out.println("Type 'logout' to logout. (THIS DOESN'T WORK)");
 				}
 			}
 		}catch (Exception e){
@@ -250,14 +255,14 @@ public class SIMClient{
 		String message = nameAndMsg.substring(endNameIndex + 1);
 		
 		if(newRecipient.equals(recipient)){
-			System.out.println("Still talking to " + recipient + ", assuming SecretKey is already in place.");
+			//System.out.println("Still talking to " + recipient + ", assuming SecretKey is already in place.");
 			talkToB(message);
 			return;
 		}
 		
 		try{
 			
-			System.out.println("Requesting credentials to talk to " + newRecipient + " from the server.");
+			//System.out.println("Requesting credentials to talk to " + newRecipient + " from the server.");
 			//Ask the server for the info to set up a connection & secretKey with the user whose name we entered
 			writeMessage(output, ("connect " + newRecipient).getBytes());
 			String maybeFound = new String(readMessage(input));
@@ -276,7 +281,7 @@ public class SIMClient{
 			byte[] nonce1Check = readMessage(input);
 			ticketToB = readMessage(input);
 			byte[] signature = readMessage(input);
-			System.out.println("Received the package from the server.");
+			//System.out.println("Received the package from the server.");
 			
 			//Set up the verification of the signature
 			Signature sig = Signature.getInstance("SHA512withRSA");
@@ -297,7 +302,7 @@ public class SIMClient{
 				return;
 			}
 			
-			System.out.println("Signature and nonce verified.");
+			//System.out.println("Signature and nonce verified.");
 			
 			//Get our password hash ready to use as a bootstrapped AES key
 			byte[] keyOfA = Arrays.copyOf(pwHash, 16); // use only first 128 bit
@@ -307,7 +312,7 @@ public class SIMClient{
 			Cipher secCipher = Cipher.getInstance("AES");
 			secCipher.init(Cipher.DECRYPT_MODE, secretKeySpecA);
 			byte[] ourDecryptedPart = secCipher.doFinal(forA);
-			System.out.println("Decrypted our part of the package.");
+			//System.out.println("Decrypted our part of the package.");
 			
 			//Break the decrypted RSA package into its parts
 			int privateKeyLength = ByteBuffer.wrap(Arrays.copyOfRange(ourDecryptedPart, 0, 4)).getInt();
@@ -317,13 +322,13 @@ public class SIMClient{
 			byte[] verifyKeyBytes = Arrays.copyOfRange(ourDecryptedPart, 8 + privateKeyLength, 8 + privateKeyLength + publicKeyLength);
 			byte[] otherNameBytes = Arrays.copyOfRange(ourDecryptedPart, 8 + privateKeyLength + publicKeyLength, ourDecryptedPart.length);
 			String nameToCheck = new String(otherNameBytes);
-			System.out.println(nameToCheck);
+			//System.out.println(nameToCheck);
 			//Check that the name matches
 			if(!nameToCheck.equals(recipient)){
 				System.out.println("These are credentials for the wrong person!");
 				return;
 			}
-			System.out.println("Credentials are for the right recipient, converting our Sig/Ver key from the byte[]s");
+			//System.out.println("Credentials are for the right recipient, converting our Sig/Ver key from the byte[]s");
 			
 			//Convert the RSA key byte[]s to RSA keys for signature and verification of the DH exchange
 			KeyFactory rsaKeyFactory = KeyFactory.getInstance("RSA");
@@ -372,7 +377,7 @@ public class SIMClient{
 			while(!logout) {
 				try {
 					String msg = new String(readMessage(inputB));
-					System.out.println(msg);
+					System.out.println(recipient + ": " + msg);
 
 				} catch(Exception e) {
 					System.out.println(e);
@@ -533,8 +538,7 @@ public class SIMClient{
 		    //Hash the psKey and send it to B
 		    MessageDigest md = MessageDigest.getInstance("SHA-512");
 		    writeMessage(outputB, md.digest(perfectSecretKey.getEncoded()));
-		    outputB.flush();
-			
+		    			
 		    //Receive the hash of 1 concatenated with the psKey from B
 		    byte[] keyHashToCheck = readMessage(inputB);
 			
