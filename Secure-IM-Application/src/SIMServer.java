@@ -93,12 +93,14 @@ class ClientEntry{
 	public byte[] pwHash;
 	public InetAddress ip;
 	public boolean available;
+	//
+	public int listeningSocketPort;
 
-
-	public ClientEntry(String name, byte[] pwHash, InetAddress ip, boolean available){
+	public ClientEntry(String name, byte[] pwHash, InetAddress ip, int port, boolean available){
 		this.name = name;
 		this.pwHash = pwHash;
 		this.ip = ip;
+		this.listeningSocketPort = port;
 		this.available = available;
 	}
 
